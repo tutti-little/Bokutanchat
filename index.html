@@ -2024,7 +2024,7 @@ function show(mode){const n=mode==='new';let pend=null;acv.style.display='block'
 }
 
 /* ===== v2.1 オンライン対戦（WebRTC P2P。サーバーを自前で用意する必要なし） =====
-   ・位置は20Hzで送信（中継経由も20Hz）、受信側は「少し過去」を補間して表示（回線のゆらぎを吸収）
+   ・位置は30Hzで送信（中継経由も30Hz）、受信側は「少し過去」を補間して表示（回線のゆらぎを吸収）
    ・自分の動きは自分で即反映（待たない）／当たり判定は撃った側、ダメージは被弾側が反映
    ・ラウンド進行はホスト（ルームを作った人）が担当。ホストが抜けても自動で引き継ぎ
    ・CPU対戦（startMatch）は一切変更していません */
@@ -2451,8 +2451,9 @@ const onLeft=m=>{if(!ON.active)return;const p=ON.pl.find(x=>x.id===m.id),u=ON.un
  ON.pl=ON.pl.filter(x=>x.id!==m.id);const mine=ON.pl.filter(x=>x.team===ON.myTeam).length;MT.a=mine;MT.b=ON.pl.length-mine;updSB();
  if(p)setMsg(p.name+'が退出しました');checkTeams()};
 
-// ---------- 位置の送受信（移動中は描画FPSと切り離して20Hzで送信） ----------
-const POS_INTERVAL=50; // 1000ms / 20Hz
+// ---------- 位置の送受信（移動中は描画FPSと切り離して30Hzで送信） ----------
+const POS_HZ=30;
+const POS_INTERVAL=1000/POS_HZ; // 約33.33ms間隔 = 30Hz
 const netSend=()=>{
  if(!ON.active||MT.state==='setup'||ON.lost)return;
  {const tn=performance.now();if(tn-(ON.rlT||0)>1000){ON.rlT=tn;try{ON.rl=!!Net.relayed()}catch(e){ON.rl=false}}}   // 中継経由かを1秒ごとに確認
