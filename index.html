@@ -2345,7 +2345,7 @@ const kill=s=>{if(s.dead)return;
  try{for(const L of s.links.values())sendL(L,{t:'bye'})}catch(e){}
  s.dead=true;clearInterval(s.pingI);clearTimeout(s.autoT);clearTimeout(s.hostChk);
  setTimeout(()=>{for(const L of s.links.values()){try{L.conn.close()}catch(e){}}busClose(s);try{if(s.peer)s.peer.destroy()}catch(e){}},200)};   // byeを送り切ってから閉じる
-const closeWs=()=>{const s=Net.s;Net.s=null;ON.ws=null;ON.id=0;ON.sm=[];RT.clear();if(ON.sendLoop){clearInterval(ON.sendLoop);ON.sendLoop=null}if(s)kill(s)};
+const closeWs=()=>{const s=Net.s;Net.s=null;ON.ws=null;ON.id=0;ON.sm=[];RT.clear();if(ON.sendLoop){clearTimeout(ON.sendLoop);ON.sendLoop=null}if(s)kill(s)};
 const connect=()=>new Promise((res,rej)=>{
  const s=(Net.s&&!Net.s.dead)?Net.s:newSession();ON.ws=s;
  loadLib().then(()=>{if(s.dead)return rej('');res()},e=>{if(Net.s===s)closeWs();rej(typeof e==='string'?e:'通信ライブラリを読み込めません')})});
@@ -2452,15 +2452,19 @@ const onLeft=m=>{if(!ON.active)return;const p=ON.pl.find(x=>x.id===m.id),u=ON.un
  if(p)setMsg(p.name+'が退出しました');checkTeams()};
 
 // ---------- 位置の送受信（移動中は描画FPSと切り離して30Hzで送信） ----------
+// 通信量削減：送信する座標のみ0.1単位に丸める。送信頻度・受信補間は維持。
 const POS_HZ=30;
 const POS_INTERVAL=1000/POS_HZ; // 約33.33ms間隔 = 30Hz
+const markPosSend=()=>{ON.txN=(ON.txN||0)+1;const t=performance.now();if(ON.txLast!=null){const g=t-ON.txLast;if(g>(ON.txGapMax||0))ON.txGapMax=g}ON.txLast=t};
 const netSend=()=>{
  if(!ON.active||MT.state==='setup'||ON.lost)return;
  {const tn=performance.now();if(tn-(ON.rlT||0)>1000){ON.rlT=tn;try{ON.rl=!!Net.relayed()}catch(e){ON.rl=false}}}   // 中継経由かを1秒ごとに確認
- const a=[r2(st.pos.x),r2(st.pos.y),r2(st.pos.z),r2(st.face),HP.cur|0,window.heldW||'',st.dead?1:0,MT.round,(st.slide>0&&st.pos.y<=st.gy+.06&&!st.dead)?1:0],L=ON.last,t=performance.now();if(ON.shSeq){a.push(ON.shSeq);if(ON.shRep>0&&ON.shE)a.push(ON.shE[0],ON.shE[1],ON.shE[2])}const frc=ON.shRep>0;if(frc)ON.shRep--;   // 末尾=スライディング中
+ const a=[r1(st.pos.x),r1(st.pos.y),r1(st.pos.z),r2(st.face),HP.cur|0,window.heldW||'',st.dead?1:0,MT.round,(st.slide>0&&st.pos.y<=st.gy+.06&&!st.dead)?1:0],L=ON.last,t=performance.now();if(ON.shSeq){a.push(ON.shSeq);if(ON.shRep>0&&ON.shE)a.push(ON.shE[0],ON.shE[1],ON.shE[2])}const frc=ON.shRep>0;if(frc)ON.shRep--;   // 末尾=スライディング中
  if(!frc&&L&&t-ON.hb<(ON.rl?500:250)&&a.every((v,i)=>v===L[i])){ON.sup=true;return}       // 止まっている間は4Hzの生存通知だけ（動いている間は毎回送る）
- {const iv=POS_INTERVAL;if(ON.sup&&L&&t-ON.hb>iv*1.5)send({t:'s',h:iv,p:L})}   // 止まっていた間は通知を省いているので、動き出す直前まで静止していた点を足して、受信側が静止点から動き出しまでをゆっくり補間しないようにする
-  ON.sup=false;ON.last=a;ON.hb=t;send({t:'s',c:r1(t),p:a})};
+ {const iv=POS_INTERVAL;if(ON.sup&&L&&t-ON.hb>iv*1.5){markPosSend();send({t:'s',h:iv,p:L})}}   // 静止中の補助通知
+  ON.sup=false;ON.last=a;ON.hb=t;markPosSend();send({t:'s',c:r1(t),p:a})};
+// setIntervalの遅れが積み重ならないよう、performance.now()基準の絶対時刻で30Hz送信を予約する。遅れた回はまとめ送りせず次の予定時刻へ戻す。
+const startPosLoop=()=>{if(ON.sendLoop)return;let next=performance.now();const step=()=>{if(!ON.active||ON.lost){ON.sendLoop=null;return}const now=performance.now();if(now>=next){netSend();const skipped=Math.floor((now-next)/POS_INTERVAL);next+=(skipped+1)*POS_INTERVAL}ON.sendLoop=setTimeout(step,Math.max(0,next-performance.now()))};step()};
 const onBt=m=>{if(!ON.active)return;const sn=sNow(),pn=performance.now();
  for(const e of m.s){const[id,T,x,y,z,f,hp,wp,fl,r,sl,sq,ex,ey,ez]=e;if(id===ON.id)continue;const u=ON.units.get(id);if(!u)continue;
   const lag=(sn-T)/1000;ON.lag+=(lag-ON.lag)*.05;ON.dev+=(Math.abs(lag-ON.lag)-ON.dev)*.05;   // 到着の遅れとゆらぎ→表示遅延に反映
@@ -2550,7 +2554,7 @@ function tickOnlineKB(dt){
  FX.position.set(st.pos.x,st.pos.y,st.pos.z);
  curT.set(st.pos.x,st.pos.y+1.2,st.pos.z);
 }
-const onlineTick=dt=>{if(!ON.sendLoop){netSend();ON.sendLoop=setInterval(netSend,POS_INTERVAL)}tickGP(dt);tickOnlineKB(dt);
+const onlineTick=dt=>{if(!ON.sendLoop)startPosLoop();tickGP(dt);tickOnlineKB(dt);
  ON.fn=(ON.fn||0)+1;{const nw=performance.now();if(!ON.ft)ON.ft=nw;if(nw-ON.ft>=2000){const f=ON.fn*1000/(nw-ON.ft);ON.ft=nw;ON.fn=0;try{const c=R.getPixelRatio();if(f<42&&c>.7){R.setPixelRatio(Math.max(.7,c-.15));R.setSize(innerWidth,innerHeight)}}catch(e){}}}
 
  {const dq=Math.min(dt,.1),tg=Math.min(.55,Math.max(ON.rl?.22:.12,ON.lag+ON.dev*2.5+.035)),d=tg-ON.delay,mx=(d>0?.10:.035)*dq;ON.delay+=Math.max(-mx,Math.min(mx,d));
@@ -2573,7 +2577,7 @@ const startNext=go=>{if(!ON.active||ON.lost||MT.state!=='between'||Math.max(ON.s
 setInterval(()=>{try{let e=document.getElementById('ndbg');
  if(!ON.active){if(e)e.style.display='none';return}
  if(!e){e=document.createElement('div');e.id='ndbg';e.style.cssText='position:fixed;left:6px;bottom:6px;z-index:99999;font:11px/1.3 monospace;color:#9f9;background:rgba(0,0,0,.45);padding:2px 5px;border-radius:4px;pointer-events:none;white-space:nowrap';document.body.appendChild(e)}
- const D=dbgD();let rx='',gp=0;for(const u of ON.units.values()){if(!u.net)continue;rx+=(rx?'/':'')+(u.rxN||0);u.rxN=0;gp=Math.max(gp,u.rxG||0);u.rxG=0}e.style.display='block';e.textContent=(amHost()?'HOST ':'GUEST ')+MT.state+' R'+MT.round+' 生存'+aliveCt('A')+'-'+aliveCt('B')+' | 送'+D.s+' 受'+D.r+' 無視'+D.x+(D.why?'('+D.why+')':'')+' 送れず'+D.hs+' | 位置受信 '+rx+'Hz 最大間隔'+Math.round(gp)+'ms'}catch(_){}},1000);
+ const D=dbgD();let rx='',gp=0;for(const u of ON.units.values()){if(!u.net)continue;rx+=(rx?'/':'')+(u.rxN||0);u.rxN=0;gp=Math.max(gp,u.rxG||0);u.rxG=0}const tx=ON.txN||0;ON.txN=0;const txGap=Math.round(ON.txGapMax||0);ON.txGapMax=0;e.style.display='block';e.textContent=(amHost()?'HOST ':'GUEST ')+MT.state+' R'+MT.round+' 生存'+aliveCt('A')+'-'+aliveCt('B')+' | 送'+D.s+' 受'+D.r+' 無視'+D.x+(D.why?'('+D.why+')':'')+' 送れず'+D.hs+' | 位置送信 '+tx+'回/秒 最大間隔'+txGap+'ms | 位置受信 '+rx+'回/秒 最大間隔'+Math.round(gp)+'ms'}catch(_){}},1000);
 
 // ---------- ホストの自動復帰（止まったら自力で進める。描画ループとは別のタイマー） ----------
 (()=>{let key='',t0=performance.now();
