@@ -2373,7 +2373,7 @@ const onMsg=m=>{switch(m.t){
  case'hit':return onHit(m);
  case'ev':return onEv(m);
  case'host':if(ON.room)ON.room.host=m.id;ON.sm=[];if(m.id===ON.id)ON.off=ON.offT=0;          // ホスト交代：時計の基準が変わるので取り直し、古い位置データは捨てる
-  for(const u of ON.units.values())u.buf=[];
+  for(const u of ON.units.values()){u.buf=[];u.r60Init=false;u.r60Acc=0;u.smi=0;}
   if(ON.active&&amHost()&&MT.state==='between')MT.t=Math.min(MT.t,1.5);return;
  case'left':return onLeft(m)}};
 
@@ -2404,7 +2404,7 @@ $('#or-copy').onclick=async()=>{if(!ON.room)return;const u=location.origin+locat
 
 // ---------- 試合のはじまり ----------
 const takeUnit=()=>{let u=bots.find(b=>b.kind==='char'&&!b.ghost&&!b.active&&!b.net);if(!u){u=mkUnit('char');bots.push(u)}return u};
-const resetUnit=u=>{u.x=u.z=u.y=0;u.hp=100;u.dead=0;u.hit=0;u.fx='';u.exT=0;u.mesh.rotation.z=0;u.mesh.scale.y=1;u.m.color.setHex(0xffffff);u.buf=[];u.wp=null;u.hitT=0;u.fl0=0;u.pk=null;u.sl=0;u.smi=0;u.vx=0;u.vz=1;u.face=0};
+const resetUnit=u=>{u.x=u.z=u.y=0;u.hp=100;u.dead=0;u.hit=0;u.fx='';u.exT=0;u.mesh.rotation.z=0;u.mesh.scale.y=1;u.m.color.setHex(0xffffff);u.buf=[];u.wp=null;u.hitT=0;u.fl0=0;u.pk=null;u.sl=0;u.smi=0;u.r60Init=false;u.r60T=0;u.r60Acc=0;u.vx=0;u.vz=1;u.face=0};
 const freeUnits=()=>{for(const u of ON.units.values()){u.net=false;u.active=false;u.g.visible=false;u.pid=0}ON.units.clear()};
 const slotOf=(team,id)=>{const mem=ON.pl.filter(p=>p.team===team).sort((a,b)=>a.id-b.id),n=mem.length,idx=Math.max(0,mem.findIndex(p=>p.id===id));
  const o=[...Array(n).keys()].sort((p,q)=>Math.abs(p-(n-1)/2)-Math.abs(q-(n-1)/2)),k=o[idx],B=team===0?ON.map.a:ON.map.b;
@@ -2472,7 +2472,7 @@ const onBt=m=>{if(!ON.active)return;const sn=sNow(),pn=performance.now();
                                     // 前後のラウンドのパケットは捨てる
   const b=u.buf;if(b.length&&T<=b[b.length-1].T)continue;
   {const g=pn-(u.rxT||pn);u.rxT=pn;if(g>(u.rxG||0))u.rxG=g}u.rxN=(u.rxN||0)+1;b.push({T,x,y,z,f,sl:sl|0});if(b.length>40)b.shift()}};
-const samp=u=>{const b=u.buf,n=b.length;if(!n)return;const rt=sNow()-ON.delay*1000,set=s=>{u.x=s.x;u.y=s.y;u.z=s.z;u.face=s.f;u.sl=s.sl|0};
+const samp=(u,rt)=>{const b=u.buf,n=b.length;if(!n)return;const set=s=>{u.x=s.x;u.y=s.y;u.z=s.z;u.face=s.f;u.sl=s.sl|0};
  if(rt<=b[0].T)return set(b[0]);
  const L=b[n-1];
  if(rt>=L.T){const p=n>1?b[n-2]:null,dt=Math.min(rt-L.T,400)/1000;let vx=0,vz=0;     // 足りない時は、速度を保ったまま徐々に減速して先読み
@@ -2482,9 +2482,13 @@ const samp=u=>{const b=u.buf,n=b.length;if(!n)return;const rt=sNow()-ON.delay*10
  if(i>2)b.splice(0,i-2);
  if(Math.hypot(c.x-a.x,c.z-a.z)>6)return set(k<.5?a:c);          // ワープ（ラウンド切替など）は補間しない
  set({x:a.x+(c.x-a.x)*k,y:a.y+(c.y-a.y)*k,z:a.z+(c.z-a.z)*k,f:a.f+ang(a.f,c.f)*k,sl:k<.5?a.sl:c.sl})};
-const updNet=(u,dt)=>{if(u.dead){u.dead+=dt;place(u);return}u.hit=Math.max(0,u.hit-dt);samp(u);
- if(!u.smi||Math.hypot(u.x-u.smx,u.z-u.smz)>4){u.smx=u.x;u.smy=u.y;u.smz=u.z;u.smi=1}
- else{const a=1-Math.exp(-dt/(ON.rl?.07:.035));u.smx+=(u.x-u.smx)*a;u.smy+=(u.y-u.smy)*a;u.smz+=(u.z-u.smz)*a;u.x=u.smx;u.y=u.smy;u.z=u.smz}
+const updNet=(u,dt)=>{if(u.dead){u.dead+=dt;place(u);return}u.hit=Math.max(0,u.hit-dt);
+ // 受信は30Hzのまま、相手の表示更新だけを固定60Hzの時計で進める。描画フレームの揺れに左右されない。
+ if(!u.r60Init){u.r60T=sNow()-ON.delay*1000;u.r60Acc=0;u.r60Init=true}
+ u.r60Acc+=Math.min(dt,.1);let n60=0;while(u.r60Acc>=1/60&&n60<6){u.r60Acc-=1/60;u.r60T+=1000/60;samp(u,u.r60T);
+  if(!u.smi||Math.hypot(u.x-u.smx,u.z-u.smz)>4){u.smx=u.x;u.smy=u.y;u.smz=u.z;u.smi=1}
+  else{const a=1-Math.exp(-(1/60)/(ON.rl?.07:.035));u.smx+=(u.x-u.smx)*a;u.smy+=(u.y-u.smy)*a;u.smz+=(u.z-u.smz)*a;u.x=u.smx;u.y=u.smy;u.z=u.smz}
+  n60++}
  u.vx=-Math.sin(u.face);u.vz=Math.cos(u.face);place(u)};
 
 // ---------- 戦闘（撃った側が判定→当たった側に反映） ----------
